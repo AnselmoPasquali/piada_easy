@@ -2,29 +2,181 @@
 <html lang="it">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <title>PDF Viewer</title>
+
   <style>
-    html, body { height: 100%; margin: 0; background: #111; }
-    /* riempi tutto lo schermo */
-    #frame { width: 100%; height: 100%; border: 0; display: block; }
+    html, body { height: 100%; margin: 0; background: #111; overflow: hidden; }
+    #wrap { position: fixed; inset: 0; display: flex; flex-direction: column; }
+
+    /* barra controlli */
+    #bar {
+      height: 48px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 10px;
+      background: rgba(0,0,0,.65);
+      color: #fff;
+      font: 14px system-ui, -apple-system, Segoe UI, Roboto, Arial;
+      user-select: none;
+    }
+    #bar button{
+      height: 34px; min-width: 38px;
+      border: 0; border-radius: 10px;
+      background: rgba(255,255,255,.12);
+      color: #fff; font-size: 18px;
+    }
+    #bar button:active { transform: scale(.98); }
+    #label { opacity: .85; }
+
+    /* area PDF */
+    #viewer {
+      flex: 1;
+      overflow: auto;
+      -webkit-overflow-scrolling: touch;
+      padding: 10px 0;
+      display: grid;
+      place-items: center;
+    }
+
+    .page {
+      margin: 10px 0;
+      box-shadow: 0 10px 30px rgba(0,0,0,.35);
+      background: #fff;
+    }
+
+    /* evita selezioni/gesture strane durante pinch */
+    canvas { touch-action: manipulation; }
   </style>
 </head>
-<body>
-  <!-- PDF.js viewer ufficiale via CDN, con fit-to-page -->
-  <iframe id="frame"></iframe>
 
+<body>
+  <div id="wrap">
+    <div id="bar">
+      <button id="minus" aria-label="Zoom out">−</button>
+      <button id="plus" aria-label="Zoom in">+</button>
+      <button id="fit" aria-label="Adatta pagina">⤢</button>
+      <span id="label"></span>
+    </div>
+
+    <div id="viewer"></div>
+  </div>
+
+  <!-- PDF.js (CDN) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.js"></script>
   <script>
+    // Worker PDF.js
+    pdfjsLib.GlobalWorkerOptions.workerSrc =
+      "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.js";
+
+    const viewer = document.getElementById("viewer");
+    const label  = document.getElementById("label");
+
     const params = new URLSearchParams(location.search);
     const file = params.get("file") || "pdf-mattina.pdf";
 
-    // viewer PDF.js con: page-fit (pagina intera) + toolbar
-    const viewerUrl =
-      "https://mozilla.github.io/pdf.js/web/viewer.html" +
-      "?file=" + encodeURIComponent(location.origin + location.pathname.replace(/\/[^\/]*$/, "/") + file) +
-      "#page=1&zoom=page-fit";
+    // zoom “utente”
+    let userZoom = 1.0;
+    let baseZoom = 1.0;   // calcolato per "pagina intera"
+    let pdfDoc = null;
 
-    document.getElementById("frame").src = viewerUrl;
+    function clearViewer() {
+      viewer.innerHTML = "";
+    }
+
+    function getBaseZoomForPage(pageViewport, containerW, containerH, singlePage) {
+      const wScale = containerW / pageViewport.width;
+      const hScale = containerH / pageViewport.height;
+
+      // Se è 1 pagina: fit-to-page (pagina intera visibile)
+      // Se sono più pagine: fit-to-width (più naturale per scroll)
+      return singlePage ? Math.min(wScale, hScale) : wScale;
+    }
+
+    async function renderAllPages() {
+      if (!pdfDoc) return;
+
+      clearViewer();
+
+      const containerW = Math.max(320, viewer.clientWidth - 20);
+      const containerH = Math.max(320, viewer.clientHeight - 20);
+      const singlePage = pdfDoc.numPages === 1;
+
+      // Calcola baseZoom usando la pagina 1 (va bene per menu)
+      const p1 = await pdfDoc.getPage(1);
+      const vp1 = p1.getViewport({ scale: 1 });
+      baseZoom = getBaseZoomForPage(vp1, containerW, containerH, singlePage);
+
+      const finalScale = baseZoom * userZoom;
+
+      // Renderizza tutte le pagine (se ne hai più di 1)
+      for (let i = 1; i <= pdfDoc.numPages; i++) {
+        const page = await pdfDoc.getPage(i);
+        const viewport = page.getViewport({ scale: finalScale });
+
+        const canvas = document.createElement("canvas");
+        canvas.className = "page";
+
+        // Retina: aumenta qualità
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width  = Math.floor(viewport.width * dpr);
+        canvas.height = Math.floor(viewport.height * dpr);
+        canvas.style.width  = Math.floor(viewport.width) + "px";
+        canvas.style.height = Math.floor(viewport.height) + "px";
+
+        const ctx = canvas.getContext("2d");
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+        viewer.appendChild(canvas);
+        await page.render({ canvasContext: ctx, viewport }).promise;
+      }
+
+      label.textContent = `${file} — Zoom: ${Math.round(userZoom * 100)}%`;
+    }
+
+    async function loadPdf() {
+      // Evita cache aggressiva
+      const url = `${file}?v=${Date.now()}`;
+
+      pdfDoc = await pdfjsLib.getDocument(url).promise;
+      userZoom = 1.0;
+      await renderAllPages();
+    }
+
+    // Controlli zoom
+    document.getElementById("plus").addEventListener("click", async () => {
+      userZoom = Math.min(4, userZoom * 1.2);
+      await renderAllPages();
+    });
+
+    document.getElementById("minus").addEventListener("click", async () => {
+      userZoom = Math.max(0.25, userZoom / 1.2);
+      await renderAllPages();
+    });
+
+    document.getElementById("fit").addEventListener("click", async () => {
+      userZoom = 1.0; // torna a “pagina intera”
+      await renderAllPages();
+      viewer.scrollTo({ top: 0, behavior: "smooth" });
+    });
+
+    // Quando ruoti/resize (mobile): ricalcola fit
+    let resizeTimer = null;
+    window.addEventListener("resize", () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => { renderAllPages(); }, 200);
+    });
+
+    loadPdf().catch(err => {
+      clearViewer();
+      label.textContent = "Errore caricamento PDF";
+      const pre = document.createElement("pre");
+      pre.style.color = "white";
+      pre.style.padding = "12px";
+      pre.textContent = String(err);
+      viewer.appendChild(pre);
+    });
   </script>
 </body>
 </html>
