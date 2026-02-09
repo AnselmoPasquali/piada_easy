@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>PDF a fasce orarie</title>
+  <style>
+    html, body { height: 100%; margin: 0; }
+    .wrap { height: 100%; display: flex; flex-direction: column; }
+    header { padding: 10px 12px; font: 14px system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    iframe { flex: 1; width: 100%; border: 0; }
+    .small { opacity: .75; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <div id="status">Caricamento…</div>
+      <div class="small" id="time"></div>
+    </header>
+
+    <!-- Visualizzazione PDF -->
+    <iframe id="pdfFrame" src="" title="PDF"></iframe>
+  </div>
+
+  <script>
+    // Nomi dei file PDF (stessa cartella di index.html)
+    const PDF_00_00_TO_15_00 = "pdf-mattina.pdf";
+    const PDF_15_01_TO_23_59 = "pdf-pomeriggio.pdf";
+
+    function pickPdfForRomeTime() {
+      // Ora in Europe/Rome anche se l’utente è in un altro fuso
+      const now = new Date();
+      const parts = new Intl.DateTimeFormat("it-IT", {
+        timeZone: "Europe/Rome",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      }).formatToParts(now);
+
+      const get = (type) => Number(parts.find(p => p.type === type).value);
+      const h = get("hour");
+      const m = get("minute");
+      const s = get("second");
+
+      // Regola richiesta:
+      // - PDF1 dalle 00:00 alle 15:00 (incluso 15:00)
+      // - PDF2 dalle 15:01 alle 23:59
+      const isFirstPdf = (h < 15) || (h === 15 && m === 0);
+
+      return { h, m, s, src: isFirstPdf ? PDF_00_00_TO_15_00 : PDF_15_01_TO_23_59 };
+    }
+
+    function updatePdf() {
+      const { h, m, s, src } = pickPdfForRomeTime();
+
+      const frame = document.getElementById("pdfFrame");
+      const status = document.getElementById("status");
+      const time = document.getElementById("time");
+
+      // Aggiorna solo se cambia davvero il PDF (evita reload continui)
+      if (!frame.dataset.current || frame.dataset.current !== src) {
+        frame.src = src;
+        frame.dataset.current = src;
+      }
+
+      const hh = String(h).padStart(2, "0");
+      const mm = String(m).padStart(2, "0");
+      const ss = String(s).padStart(2, "0");
+
+      status.textContent = `Sto mostrando: ${src}`;
+      time.textContent = `Ora (Europe/Rome): ${hh}:${mm}:${ss}`;
+    }
+
+    updatePdf();
+    // Controlla ogni 10 secondi: al cambio 15:00→15:01 switcha da solo
+    setInterval(updatePdf, 10000);
+  </script>
+</body>
+</html>
